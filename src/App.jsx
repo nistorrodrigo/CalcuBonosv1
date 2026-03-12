@@ -316,6 +316,20 @@ function TH2()          { return{ padding:"3px 7px",color:"rgba(255,255,255,.4)"
 function TD(a="left")   { return{ padding:"8px 7px",whiteSpace:"nowrap",textAlign:a }; }
 
 
+
+// USD sub-types
+function usdSubtype(ticker) {
+  if (ticker.startsWith("BP")) return "BOPREAL";
+  if (ticker.startsWith("AL") || ticker.startsWith("AE")) return "BONAR";
+  if (ticker.startsWith("GD")) return "GLOBAL";
+  return "USD";
+}
+const USD_SUBTYPES = {
+  BOPREAL:{ label:"Bopreales", color:"#0f766e", lineColor:"#14b8a6" },
+  BONAR:  { label:"Bonares",   color:"#7c3aed", lineColor:"#a78bfa" },
+  GLOBAL: { label:"Globales",  color:"#166534", lineColor:"#4ade80" },
+};
+
 // ─── PEER CURVE CHART ────────────────────────────────────────────────────────
 // Multi-line sovereign curve chart + Argentina bonds as dots
 function PeerCurveChart({ bonds, usdTargets, scens, horizon, currentBCS }) {
@@ -400,34 +414,70 @@ function PeerCurveChart({ bonds, usdTargets, scens, horizon, currentBCS }) {
           return <path d={toSvgPath(linePts)} fill="none" stroke={c.color} strokeWidth={1.5} strokeDasharray="6 3" opacity={0.7}/>;
         })()}
 
-        {/* Argentina bonds as dots */}
-        {argBonds.map((b,i)=>{
-          const dur = b.dur??3;
-          const cx = px(dur), cy = py(b.y);
-          // Show target yield from selected BASE curve
-          const targetY = usdTargets.BASE!=="manual" ? interpYield(usdTargets.BASE, dur) : null;
-          return (
-            <g key={b.id}>
-              {/* Arrow from current to target if target selected */}
-              {targetY&&Math.abs(targetY-b.y)>0.05&&(
-                <line x1={cx} y1={cy} x2={cx} y2={py(targetY)} stroke={PEER_CURVES[usdTargets.BASE]?.color||C.blue2}
-                  strokeWidth={1.5} strokeDasharray="3 2" opacity={0.7}
-                  markerEnd="url(#arrow)"/>
-              )}
-              {/* Current yield dot */}
-              <circle cx={cx} cy={cy} r={6} fill={TYPES.USD.color} stroke="white" strokeWidth={1.5}/>
-              {/* Target yield dot */}
-              {targetY&&<circle cx={cx} cy={py(targetY)} r={4} fill={PEER_CURVES[usdTargets.BASE]?.color||C.blue2} stroke="white" strokeWidth={1}/>}
-              <text x={cx+8} y={cy+4} fontSize={9} fontWeight={800} fill={C.text}>{b.t}</text>
-              {targetY&&<text x={cx+8} y={py(targetY)+4} fontSize={8} fill={PEER_CURVES[usdTargets.BASE]?.color||C.blue2}>{targetY.toFixed(2)}%</text>}
-            </g>
-          );
-        })}
+        {/* Argentina bonds — 3 separate curves: Bopreales, Bonares, Globales */}
+        {(()=>{
+          const subtypes = ["BOPREAL","BONAR","GLOBAL"];
+          const targetCurveColor = PEER_CURVES[usdTargets.BASE]?.color||C.blue2;
+          return subtypes.map(stype => {
+            const cfg = USD_SUBTYPES[stype];
+            const grp = argBonds.filter(b=>usdSubtype(b.t)===stype).sort((a,z)=>(a.dur??3)-(z.dur??3));
+            if (grp.length===0) return null;
+
+            // Build polylines for actual yields and target yields
+            const actualPts  = grp.map(b=>({x:px(b.dur??3), y:py(b.y), b}));
+            const targetPts  = usdTargets.BASE!=="manual"
+              ? grp.map(b=>{const ty=interpYield(usdTargets.BASE,b.dur??3); return{x:px(b.dur??3),y:py(ty),ty};})
+              : null;
+
+            const actualPath = actualPts.map((p,i)=>`${i===0?'M':'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+            const targetPath = targetPts ? targetPts.map((p,i)=>`${i===0?'M':'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ') : null;
+
+            return (
+              <g key={stype}>
+                {/* Actual yield curve line */}
+                {actualPts.length>1&&<path d={actualPath} fill="none" stroke={cfg.lineColor} strokeWidth={2.5} strokeDasharray="6 3" opacity={0.9}/>}
+                {/* Target yield curve line */}
+                {targetPath&&targetPts.length>1&&<path d={targetPath} fill="none" stroke={targetCurveColor} strokeWidth={1.5} strokeDasharray="3 2" opacity={0.55}/>}
+                {/* Dots + labels */}
+                {actualPts.map(({x,y,b},i)=>{
+                  const dur = b.dur??3;
+                  const ty = usdTargets.BASE!=="manual" ? interpYield(usdTargets.BASE,dur) : null;
+                  const tcy = ty!=null ? py(ty) : null;
+                  return (
+                    <g key={b.id}>
+                      {/* Vertical arrow actual→target */}
+                      {tcy!=null&&Math.abs(tcy-y)>3&&(
+                        <line x1={x} y1={y} x2={x} y2={tcy}
+                          stroke={targetCurveColor} strokeWidth={1.2} strokeDasharray="2 2" opacity={0.6}
+                          markerEnd="url(#arrowBlue)"/>
+                      )}
+                      {/* Actual dot */}
+                      <circle cx={x} cy={y} r={5.5} fill={cfg.color} stroke="white" strokeWidth={1.5}/>
+                      {/* Target dot */}
+                      {tcy!=null&&<circle cx={x} cy={tcy} r={3.5} fill={targetCurveColor} stroke="white" strokeWidth={1} opacity={0.85}/>}
+                      {/* Label */}
+                      <text x={x+7} y={y+4} fontSize={8.5} fontWeight={800} fill={cfg.color}>{b.t}</text>
+                      {ty!=null&&<text x={x+7} y={tcy+4} fontSize={7.5} fill={targetCurveColor} opacity={0.85}>{ty.toFixed(2)}%</text>}
+                    </g>
+                  );
+                })}
+                {/* Subtype label at end of curve */}
+                {actualPts.length>0&&(()=>{
+                  const last=actualPts[actualPts.length-1];
+                  return <text x={last.x+8} y={last.y-8} fontSize={9} fontWeight={800} fill={cfg.color}>{cfg.label}</text>;
+                })()}
+              </g>
+            );
+          });
+        })()}
 
         {/* Arrow marker def */}
         <defs>
           <marker id="arrow" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L6,3 z" fill="#666"/>
+            <path d="M0,0 L0,6 L6,3 z" fill="#64748b"/>
+          </marker>
+          <marker id="arrowBlue" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill={PEER_CURVES[usdTargets.BASE]?.color||C.blue2}/>
           </marker>
         </defs>
 
@@ -446,8 +496,13 @@ function PeerCurveChart({ bonds, usdTargets, scens, horizon, currentBCS }) {
             </g>
           );
         })}
-        <circle cx={w-mg.r+20} cy={mg.t+28+Object.keys(PEER_CURVES).length*16} r={5} fill={TYPES.USD.color} stroke="white" strokeWidth={1}/>
-        <text x={w-mg.r+30} y={mg.t+32+Object.keys(PEER_CURVES).length*16} fontSize={9} fill={C.text}>Bonos ARG (actual)</text>
+        {Object.entries(USD_SUBTYPES).map(([k,v],i)=>(
+          <g key={k}>
+            <circle cx={w-mg.r+20} cy={mg.t+30+(Object.keys(PEER_CURVES).length+i)*16} r={4.5} fill={v.color} stroke="white" strokeWidth={1}/>
+            <line x1={w-mg.r+14} x2={w-mg.r+26} y1={mg.t+30+(Object.keys(PEER_CURVES).length+i)*16} y2={mg.t+30+(Object.keys(PEER_CURVES).length+i)*16} stroke={v.lineColor} strokeWidth={2} strokeDasharray="4 2"/>
+            <text x={w-mg.r+30} y={mg.t+34+(Object.keys(PEER_CURVES).length+i)*16} fontSize={9} fill={C.text}>{v.label} (actual)</text>
+          </g>
+        ))}
 
         {/* Scenario target labels */}
         <text x={w-mg.r+14} y={mg.t+48+Object.keys(PEER_CURVES).length*16} fontSize={9} fontWeight={700} fill={C.navy}>Targets por escenario:</text>
@@ -986,39 +1041,72 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {bonds.filter(b=>b.active&&b.tp==="USD").map((b,i)=>{
-                      const dur = b.dur??3;
-                      const rows = Object.entries(scens).map(([k,s])=>{
-                        const tgt = usdTargets[k]&&usdTargets[k]!=="manual" ? interpYield(usdTargets[k],dur) : (b.exitYields?.[k]??b.y);
-                        const dbps = tgt!=null ? Math.round((tgt-b.y)*100) : null;
-                        const ret = calcReturn(b,s,k,horizon,currentBCS,usdTargets[k]||null).rUSD;
-                        return {k,s,tgt,dbps,ret};
+                    {(()=>{
+                      const usdBonds = bonds.filter(b=>b.active&&b.tp==="USD");
+                      const groups = [
+                        {key:"BOPREAL", bonds:usdBonds.filter(b=>usdSubtype(b.t)==="BOPREAL")},
+                        {key:"BONAR",   bonds:usdBonds.filter(b=>usdSubtype(b.t)==="BONAR")},
+                        {key:"GLOBAL",  bonds:usdBonds.filter(b=>usdSubtype(b.t)==="GLOBAL")},
+                      ];
+                      let rowIdx = 0;
+                      return groups.flatMap(({key,bonds:grpBonds})=>{
+                        if(grpBonds.length===0) return [];
+                        const cfg = USD_SUBTYPES[key];
+                        const rows = [
+                          // Group header row
+                          <tr key={`hdr-${key}`} style={{ background:cfg.color+"18" }}>
+                            <td colSpan={12} style={{ padding:"6px 12px", fontWeight:800, fontSize:11,
+                              color:cfg.color, borderLeft:`4px solid ${cfg.color}`, borderBottom:`1px solid ${cfg.color}40` }}>
+                              ── {cfg.label}
+                              <span style={{ marginLeft:10,fontSize:9,fontWeight:400,color:C.muted }}>
+                                Target BASE: <span style={{ color:PEER_CURVES[usdTargets.BASE]?.color||C.muted,fontWeight:600 }}>
+                                  {PEER_CURVES[usdTargets.BASE]?.label||"Manual"}</span>
+                                &nbsp;· BULL: <span style={{ color:PEER_CURVES[usdTargets.BULL]?.color||C.muted,fontWeight:600 }}>
+                                  {PEER_CURVES[usdTargets.BULL]?.label||"Manual"}</span>
+                                &nbsp;· BEAR: <span style={{ color:PEER_CURVES[usdTargets.BEAR]?.color||C.muted,fontWeight:600 }}>
+                                  {PEER_CURVES[usdTargets.BEAR]?.label||"Manual"}</span>
+                              </span>
+                            </td>
+                          </tr>,
+                          // Bond rows
+                          ...grpBonds.sort((a,z)=>(a.dur??3)-(z.dur??3)).map((b)=>{
+                            const ri = rowIdx++;
+                            const dur = b.dur??3;
+                            const scenRows = Object.entries(scens).map(([k,s])=>{
+                              const tgt = usdTargets[k]&&usdTargets[k]!=="manual" ? interpYield(usdTargets[k],dur) : (b.exitYields?.[k]??b.y);
+                              const dbps = tgt!=null ? Math.round((tgt-b.y)*100) : null;
+                              const ret = calcReturn(b,s,k,horizon,currentBCS,usdTargets[k]||null).rUSD;
+                              return {k,s,tgt,dbps,ret};
+                            });
+                            return (
+                              <tr key={b.id} style={{ background:ri%2===0?C.card:C.bg,borderBottom:`1px solid ${C.border}`,borderLeft:`4px solid ${cfg.color}40` }}>
+                                <td style={{ padding:"7px 9px" }}>
+                                  <div style={{ fontWeight:800,color:cfg.color,fontSize:12 }}>{b.t}</div>
+                                  <div style={{ fontSize:9,color:C.muted }}>{b.n}</div>
+                                </td>
+                                <td style={{ padding:"7px 9px",textAlign:"center",color:C.muted,fontSize:10 }}>{dur.toFixed(1)}y</td>
+                                <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:C.text }}>{b.y.toFixed(2)}%</td>
+                                {scenRows.map(({k,s,tgt,dbps,ret})=>(
+                                  <Fragment key={k}>
+                                    <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:PEER_CURVES[usdTargets[k]]?.color||C.muted,borderLeft:`2px solid ${s.col}25` }}>
+                                      {tgt!=null?`${tgt.toFixed(2)}%`:"–"}
+                                    </td>
+                                    <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:600,fontSize:10,
+                                      color:dbps!=null?(dbps<0?C.pos:dbps>0?C.neg:C.muted):C.muted }}>
+                                      {dbps!=null?(dbps<=0?`${dbps}bps`:`+${dbps}bps`):"–"}
+                                    </td>
+                                    <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:rcu(ret) }}>
+                                      {fmtS(ret)}
+                                    </td>
+                                  </Fragment>
+                                ))}
+                              </tr>
+                            );
+                          })
+                        ];
+                        return rows;
                       });
-                      return (
-                        <tr key={b.id} style={{ background:i%2===0?C.card:C.bg,borderBottom:`1px solid ${C.border}` }}>
-                          <td style={{ padding:"7px 9px" }}>
-                            <div style={{ fontWeight:800,color:TYPES.USD.color,fontSize:12 }}>{b.t}</div>
-                            <div style={{ fontSize:9,color:C.muted }}>{b.n}</div>
-                          </td>
-                          <td style={{ padding:"7px 9px",textAlign:"center",color:C.muted,fontSize:10 }}>{dur.toFixed(1)}y</td>
-                          <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:C.text }}>{b.y.toFixed(2)}%</td>
-                          {rows.map(({k,s,tgt,dbps,ret})=>(
-                            <Fragment key={k}>
-                              <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:PEER_CURVES[usdTargets[k]]?.color||C.muted,borderLeft:`2px solid ${s.col}25` }}>
-                                {tgt!=null?`${tgt.toFixed(2)}%`:"–"}
-                              </td>
-                              <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:600,fontSize:10,
-                                color:dbps!=null?(dbps<0?C.pos:dbps>0?C.neg:C.muted):C.muted }}>
-                                {dbps!=null?(dbps<=0?`${dbps}bps`:`+${dbps}bps`):"–"}
-                              </td>
-                              <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:rcu(ret) }}>
-                                {fmtS(ret)}
-                              </td>
-                            </Fragment>
-                          ))}
-                        </tr>
-                      );
-                    })}
+                    })()}
                   </tbody>
                 </table>
               </div>
