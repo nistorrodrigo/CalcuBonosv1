@@ -43,6 +43,53 @@ function calcCumCPI(path, months) {
   return cum - 1;
 }
 
+
+// ─── PEER CURVES (NY Law Sovereign Bonds) ───────────────────────────────────
+// Control points {d: duration_years, y: yield_%} read from Latin Securities chart
+// Source: "Dollar Sovereign Bonds: still with room for tightening" (Mar-2026)
+const PEER_CURVES = {
+  manual:          { label:"Manual (sin curva)", color:"#94a3b8", rating:"–", points:[] },
+  argentina_now:   { label:"Argentina (actual)", color:"#38bdf8", rating:"B-/CCC",  dash:true,
+    points:[{d:2,y:8.50},{d:3,y:9.00},{d:4,y:9.20},{d:5,y:9.40},{d:6,y:9.60},{d:6.5,y:9.70}] },
+  argentina_target:{ label:"Argentina Target (400bps)", color:"#1d4ed8", rating:"Target",
+    points:[{d:2,y:8.50},{d:3,y:7.90},{d:4,y:7.80},{d:5,y:7.75},{d:6,y:7.70},{d:7,y:7.70},{d:8,y:7.75}] },
+  ecuador:         { label:"Ecuador (B-)", color:"#ca8a04", rating:"B-",
+    points:[{d:2,y:7.50},{d:3,y:8.00},{d:4,y:8.30},{d:5,y:8.60},{d:6,y:8.80},{d:7,y:9.00}] },
+  el_salvador:     { label:"El Salvador (B-)", color:"#60a5fa", rating:"B-",
+    points:[{d:2,y:6.50},{d:3,y:7.30},{d:4,y:7.70},{d:5,y:7.85},{d:6,y:8.00},{d:7,y:8.10}] },
+  nigeria:         { label:"Nigeria (B-/CCC+)", color:"#16a34a", rating:"B-/CCC+",
+    points:[{d:2,y:6.00},{d:3,y:7.00},{d:4,y:7.80},{d:5,y:8.20},{d:6,y:8.50},{d:8,y:8.80},{d:10,y:9.50}] },
+  egypt:           { label:"Egypt (CCC+/B)", color:"#111827", rating:"CCC+/B",
+    points:[{d:2,y:10.50},{d:3,y:10.70},{d:4,y:10.85},{d:5,y:11.00},{d:6,y:11.10},{d:7,y:11.20}] },
+  colombia:        { label:"Colombia (BB+)", color:"#dc2626", rating:"BB+",
+    points:[{d:2,y:5.20},{d:4,y:5.90},{d:6,y:6.50},{d:8,y:7.00},{d:10,y:7.30},{d:13,y:7.50}] },
+  brazil:          { label:"Brazil (BB/BB+)", color:"#f59e0b", rating:"BB/BB+",
+    points:[{d:2,y:7.50},{d:4,y:7.55},{d:6,y:7.57},{d:8,y:7.60},{d:10,y:7.63},{d:13,y:7.50}] },
+};
+
+// Linear interpolation across control points; extrapolates flat at edges
+function interpYield(curveKey, dur) {
+  const curve = PEER_CURVES[curveKey];
+  if (!curve || !curve.points || curve.points.length === 0) return null;
+  const pts = curve.points;
+  if (dur <= pts[0].d) return pts[0].y;
+  if (dur >= pts[pts.length-1].d) return pts[pts.length-1].y;
+  for (let i = 0; i < pts.length-1; i++) {
+    if (dur >= pts[i].d && dur <= pts[i+1].d) {
+      const t = (dur - pts[i].d) / (pts[i+1].d - pts[i].d);
+      return +(pts[i].y + t * (pts[i+1].y - pts[i].y)).toFixed(3);
+    }
+  }
+  return pts[pts.length-1].y;
+}
+
+// Default exit yield for USD bond: manual entry if no peer curve selected, else from curve
+function resolveUSDExit(bond, scenKey, peerKey) {
+  if (!peerKey || peerKey === "manual") return bond.exitYields?.[scenKey] ?? bond.y;
+  const fromCurve = interpYield(peerKey, bond.dur ?? 3);
+  return fromCurve ?? bond.exitYields?.[scenKey] ?? bond.y;
+}
+
 // ─── SCENARIOS ───────────────────────────────────────────────────────────────
 const S0 = {
   BASE:{ label:"Base", w:55, col:C.blue1,
@@ -130,11 +177,12 @@ function priceBond(tp, yld, monthsLeft, couponRate) {
   return 100;
 }
 
-function calcReturn(bond, scen, scenKey, horizon, currentBCS) {
+function calcReturn(bond, scen, scenKey, horizon, currentBCS, peerCurveKey = null) {
   const m0  = mths(bond.m);
   const h   = Math.min(horizon, m0);
   const m1  = Math.max(0, m0 - h);
-  const ey  = bond.exitYields?.[scenKey] ?? bond.y;
+  // For USD bonds: use peer curve if selected, else manual exit yield
+  const ey  = bond.tp === "USD" ? resolveUSDExit(bond, scenKey, peerCurveKey) : (bond.exitYields?.[scenKey] ?? bond.y);
   const path = scen.cpiPath ?? Array(24).fill(scen.cpiM ?? 2.5);
 
   if (bond.tp === "LECAP") {
@@ -183,10 +231,10 @@ function calcReturn(bond, scen, scenKey, horizon, currentBCS) {
   return { rARS: 0, rUSD: 0 };
 }
 
-function calcWt(bond, scens, h, bcs) {
+function calcWt(bond, scens, h, bcs, peerCurves = {}) {
   let wA = 0, wU = 0, tw = 0;
   Object.entries(scens).forEach(([k, s]) => {
-    const r = calcReturn(bond, s, k, h, bcs);
+    const r = calcReturn(bond, s, k, h, bcs, peerCurves[k] ?? null);
     wA += r.rARS * s.w; wU += r.rUSD * s.w; tw += s.w;
   });
   return { rARS: wA / tw, rUSD: wU / tw };
@@ -267,6 +315,152 @@ function TH(a="center") { return{ padding:"8px 7px",color:"rgba(255,255,255,.75)
 function TH2()          { return{ padding:"3px 7px",color:"rgba(255,255,255,.4)",fontWeight:500,fontSize:9,textAlign:"center" }; }
 function TD(a="left")   { return{ padding:"8px 7px",whiteSpace:"nowrap",textAlign:a }; }
 
+
+// ─── PEER CURVE CHART ────────────────────────────────────────────────────────
+// Multi-line sovereign curve chart + Argentina bonds as dots
+function PeerCurveChart({ bonds, usdTargets, scens, horizon, currentBCS }) {
+  const w = 1100, h = 400;
+  const mg = { t:40, r:200, b:48, l:55 };
+  const pw = w - mg.l - mg.r, ph = h - mg.t - mg.b;
+  const xMin=0, xMax=14, yMin=4.5, yMax=12;
+  const px = x => mg.l + (x-xMin)/(xMax-xMin)*pw;
+  const py = y => mg.t + (1-(y-yMin)/(yMax-yMin))*ph;
+
+  // Build smooth polyline points for each curve
+  const buildLine = (pts) => {
+    const dRange = Array.from({length:141}, (_,i)=>i*0.1);
+    return dRange.map(d=>{
+      if(d<pts[0].d||d>pts[pts.length-1].d)return null;
+      for(let i=0;i<pts.length-1;i++){
+        if(d>=pts[i].d&&d<=pts[i+1].d){
+          const t=(d-pts[i].d)/(pts[i+1].d-pts[i].d);
+          return{x:px(d), y:py(pts[i].y+t*(pts[i+1].y-pts[i].y))};
+        }
+      }
+      return null;
+    }).filter(Boolean);
+  };
+
+  const toSvgPath = (pts) => pts.map((p,i)=>`${i===0?'M':'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+
+  // Argentina bonds (USD) for overlay dots
+  const argBonds = bonds.filter(b=>b.active&&b.tp==="USD");
+
+  const ticksX = Array.from({length:8},(_,i)=>i*2);
+  const ticksY = Array.from({length:16},(_,i)=>+(4.5+i*0.5).toFixed(1));
+
+  // Highlight selected target curves
+  const activeCurves = new Set(Object.values(usdTargets).filter(k=>k!=="manual"));
+
+  return (
+    <div style={{overflowX:"auto"}}>
+      <svg width={w} height={h} style={{fontFamily:"inherit",display:"block"}}>
+        <text x={w/2-mg.r/2} y={22} textAnchor="middle" fontSize={13} fontWeight={800} fill={C.navy}>
+          Dollar Sovereign Bonds — NY Law Yield Curve & Target (Yield%)
+        </text>
+
+        {/* Grid */}
+        {ticksX.map(v=><line key={v} x1={px(v)} y1={mg.t} x2={px(v)} y2={mg.t+ph} stroke={C.border} strokeWidth={v===0?1.5:0.7}/>)}
+        {ticksY.map(v=><line key={v} x1={mg.l} y1={py(v)} x2={mg.l+pw} y2={py(v)} stroke={C.border} strokeWidth={v===Math.round(v)?0.7:0.4}/>)}
+        <rect x={mg.l} y={mg.t} width={pw} height={ph} fill="none" stroke={C.border} strokeWidth={1}/>
+
+        {/* Tick labels */}
+        {ticksX.map(v=><text key={v} x={px(v)} y={mg.t+ph+16} textAnchor="middle" fontSize={10} fill={C.muted}>{v}</text>)}
+        {ticksY.filter(v=>v===Math.round(v)||v%0.5===0).map(v=>(
+          <text key={v} x={mg.l-7} y={py(v)+3.5} textAnchor="end" fontSize={9.5} fill={C.muted}>{v.toFixed(1)}</text>
+        ))}
+        <text x={mg.l+pw/2} y={h-8} textAnchor="middle" fontSize={11} fill={C.muted}>Duration (years)</text>
+        <text x={14} y={mg.t+ph/2} textAnchor="middle" fontSize={11} fill={C.muted} transform={`rotate(-90,14,${mg.t+ph/2})`}>Yield (%)</text>
+
+        {/* Peer curves */}
+        {Object.entries(PEER_CURVES).filter(([k])=>k!=="manual"&&k!=="argentina_now").map(([key,curve])=>{
+          if(curve.points.length===0) return null;
+          const linePts = buildLine(curve.points);
+          const isActive = activeCurves.has(key);
+          return (
+            <g key={key} opacity={isActive?1:0.55}>
+              <path d={toSvgPath(linePts)} fill="none" stroke={curve.color}
+                strokeWidth={isActive?3:1.8}
+                strokeDasharray={curve.dash?"8 4":"none"}/>
+              {/* Label at end of line */}
+              {linePts.length>0&&(
+                <text x={linePts[linePts.length-1].x+6} y={linePts[linePts.length-1].y+4}
+                  fontSize={isActive?11:9.5} fontWeight={isActive?800:500} fill={curve.color}>
+                  {curve.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Argentina actual (thin dashed) */}
+        {(()=>{
+          const c = PEER_CURVES.argentina_now;
+          const linePts = buildLine(c.points);
+          return <path d={toSvgPath(linePts)} fill="none" stroke={c.color} strokeWidth={1.5} strokeDasharray="6 3" opacity={0.7}/>;
+        })()}
+
+        {/* Argentina bonds as dots */}
+        {argBonds.map((b,i)=>{
+          const dur = b.dur??3;
+          const cx = px(dur), cy = py(b.y);
+          // Show target yield from selected BASE curve
+          const targetY = usdTargets.BASE!=="manual" ? interpYield(usdTargets.BASE, dur) : null;
+          return (
+            <g key={b.id}>
+              {/* Arrow from current to target if target selected */}
+              {targetY&&Math.abs(targetY-b.y)>0.05&&(
+                <line x1={cx} y1={cy} x2={cx} y2={py(targetY)} stroke={PEER_CURVES[usdTargets.BASE]?.color||C.blue2}
+                  strokeWidth={1.5} strokeDasharray="3 2" opacity={0.7}
+                  markerEnd="url(#arrow)"/>
+              )}
+              {/* Current yield dot */}
+              <circle cx={cx} cy={cy} r={6} fill={TYPES.USD.color} stroke="white" strokeWidth={1.5}/>
+              {/* Target yield dot */}
+              {targetY&&<circle cx={cx} cy={py(targetY)} r={4} fill={PEER_CURVES[usdTargets.BASE]?.color||C.blue2} stroke="white" strokeWidth={1}/>}
+              <text x={cx+8} y={cy+4} fontSize={9} fontWeight={800} fill={C.text}>{b.t}</text>
+              {targetY&&<text x={cx+8} y={py(targetY)+4} fontSize={8} fill={PEER_CURVES[usdTargets.BASE]?.color||C.blue2}>{targetY.toFixed(2)}%</text>}
+            </g>
+          );
+        })}
+
+        {/* Arrow marker def */}
+        <defs>
+          <marker id="arrow" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#666"/>
+          </marker>
+        </defs>
+
+        {/* Legend panel */}
+        <rect x={w-mg.r+8} y={mg.t} width={mg.r-12} height={ph} rx={8} fill="#f8fafc" stroke={C.border}/>
+        <text x={w-mg.r+14} y={mg.t+16} fontSize={10} fontWeight={700} fill={C.navy}>Curvas comparables</text>
+        {Object.entries(PEER_CURVES).filter(([k])=>k!=="manual").map(([key,curve],i)=>{
+          const isActive = activeCurves.has(key);
+          return (
+            <g key={key} opacity={isActive?1:0.5}>
+              <line x1={w-mg.r+14} y1={mg.t+28+i*16} x2={w-mg.r+36} y2={mg.t+28+i*16}
+                stroke={curve.color} strokeWidth={isActive?3:1.5} strokeDasharray={curve.dash?"6 3":"none"}/>
+              <text x={w-mg.r+40} y={mg.t+32+i*16} fontSize={9} fill={C.text} fontWeight={isActive?700:400}>
+                {curve.label.replace("Argentina ","ARG ").replace("El Salvador","El Salv.")}
+              </text>
+            </g>
+          );
+        })}
+        <circle cx={w-mg.r+20} cy={mg.t+28+Object.keys(PEER_CURVES).length*16} r={5} fill={TYPES.USD.color} stroke="white" strokeWidth={1}/>
+        <text x={w-mg.r+30} y={mg.t+32+Object.keys(PEER_CURVES).length*16} fontSize={9} fill={C.text}>Bonos ARG (actual)</text>
+
+        {/* Scenario target labels */}
+        <text x={w-mg.r+14} y={mg.t+48+Object.keys(PEER_CURVES).length*16} fontSize={9} fontWeight={700} fill={C.navy}>Targets por escenario:</text>
+        {Object.entries(usdTargets).map(([sc,key],i)=>(
+          <text key={sc} x={w-mg.r+14} y={mg.t+62+Object.keys(PEER_CURVES).length*16+i*13} fontSize={8.5} fill={scens[sc]?.col||C.muted}>
+            {sc}: {PEER_CURVES[key]?.label.split(" (")[0]||"Manual"}
+          </text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
 // ─── SCATTER CHART ───────────────────────────────────────────────────────────
 function ScatterChart({ data, xKey, yKey, xLabel, yLabel, title, w=520, h=300, colorKey="color", labelKey="t", refLines=[] }) {
   const mg = { t:30, r:20, b:44, l:52 };
@@ -327,6 +521,7 @@ export default function App() {
   const [horizon,    setHorizon]   = useState(3);
   const [tab,        setTab]       = useState("retornos"); // retornos | curvas | breakevens
   const [showPanel,  setShowPanel] = useState(false);
+  const [usdTargets, setUsdTargets] = useState({BASE:"argentina_target", BULL:"colombia", BEAR:"egypt"}); // peer curve per scenario
   const [expandPath, setExpandPath]= useState({});        // {BASE:true, ...}
   const [showAdd,    setShowAdd]   = useState(false);
   const [newBond,    setNewBond]   = useState(blank);
@@ -343,8 +538,8 @@ export default function App() {
       .filter(b => filterTp === "ALL" || b.tp === filterTp)
       .map(b => {
         const byScen = {};
-        Object.entries(scens).forEach(([k,s]) => { byScen[k] = calcReturn(b, s, k, horizon, currentBCS); });
-        const wt = calcWt(b, scens, horizon, currentBCS);
+        Object.entries(scens).forEach(([k,s]) => { byScen[k] = calcReturn(b, s, k, horizon, currentBCS, b.tp==="USD" ? usdTargets[k] : null); });
+        const wt = calcWt(b, scens, horizon, currentBCS, b.tp==="USD" ? usdTargets : {});
         return { ...b, byScen, wt };
       })
       .sort((a,z) => {
@@ -354,7 +549,7 @@ export default function App() {
         if(sortBy==="baseARS") return z.byScen.BASE.rARS - a.byScen.BASE.rARS;
         return 0;
       });
-  }, [bonds, scens, horizon, currentBCS, sortBy, filterTp]);
+  }, [bonds, scens, horizon, currentBCS, sortBy, filterTp, usdTargets]);
 
   const cfData = useMemo(() => {
     if (!cfBond) return [];
@@ -396,9 +591,9 @@ export default function App() {
   const returnCurve = useMemo(() => {
     const active = bonds.filter(b=>b.active);
     return active.map(b=>{
-      const wt  = calcWt(b, scens, horizon, currentBCS);
-      const bull = calcReturn(b, scens.BULL, "BULL", horizon, currentBCS);
-      const bear = calcReturn(b, scens.BEAR, "BEAR", horizon, currentBCS);
+      const wt  = calcWt(b, scens, horizon, currentBCS, b.tp==="USD" ? usdTargets : {});
+      const bull = calcReturn(b, scens.BULL, "BULL", horizon, currentBCS, b.tp==="USD" ? usdTargets.BULL : null);
+      const bear = calcReturn(b, scens.BEAR, "BEAR", horizon, currentBCS, b.tp==="USD" ? usdTargets.BEAR : null);
       return {
         t:b.t, dur:b.dur||0.2,
         wUSD:+wt.rUSD.toFixed(2),
@@ -437,7 +632,7 @@ export default function App() {
       row.usdBaseUSD   = +usdR.toFixed(1);
       return row;
     });
-  }, [bonds, scens, horizon, currentBCS]);
+  }, [bonds, scens, horizon, currentBCS, usdTargets]);
 
   const scenKeys = Object.keys(scens);
   const card = { background:C.card, borderRadius:12, boxShadow:"0 2px 12px rgba(0,0,57,.08)", overflow:"hidden" };
@@ -515,6 +710,26 @@ export default function App() {
                         style={{ width:64,background:"rgba(255,255,255,.12)",border:"none",color:C.white,borderRadius:4,padding:"3px 6px",textAlign:"right",fontSize:11 }}/>
                     </div>
                   ))}
+
+                  {/* USD Target Curve selector */}
+                  <div style={{ marginTop:8,background:"rgba(255,255,255,.06)",borderRadius:7,padding:"6px 8px",borderLeft:`3px solid ${PEER_CURVES[usdTargets[key]]?.color||"#3399ff"}` }}>
+                    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+                      <span style={{ color:"#8090a8",fontSize:10 }}>Target USD (curva par)</span>
+                      <select value={usdTargets[key]||"manual"}
+                        onChange={e=>setUsdTargets(p=>({...p,[key]:e.target.value}))}
+                        style={{ maxWidth:160,background:"rgba(255,255,255,.12)",border:"none",color:PEER_CURVES[usdTargets[key]]?.color||C.white,borderRadius:4,padding:"2px 6px",fontSize:10,fontWeight:700,cursor:"pointer" }}>
+                        {Object.entries(PEER_CURVES).map(([k,v])=>(
+                          <option key={k} value={k} style={{ color:C.text }}>{v.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {usdTargets[key]&&usdTargets[key]!=="manual"&&(
+                      <div style={{ marginTop:4,fontSize:9,color:"#5070a0" }}>
+                        {PEER_CURVES[usdTargets[key]]?.rating&&<span style={{ color:PEER_CURVES[usdTargets[key]]?.color,fontWeight:700 }}>{PEER_CURVES[usdTargets[key]]?.rating} · </span>}
+                        Exit yields USD se calculan interpolando esta curva por duración de cada bono
+                      </div>
+                    )}
+                  </div>
 
                   {/* CPI section */}
                   <div style={{ marginTop:8,background:"rgba(255,255,255,.04)",borderRadius:7,padding:"7px 8px" }}>
@@ -732,6 +947,86 @@ export default function App() {
         {/* ════ TAB: CURVAS ══════════════════════════════════════════════════ */}
         {tab === "curvas" && (
           <div style={{ display:"flex",flexDirection:"column",gap:14 }}>
+
+            {/* ── SOVEREIGN CURVE CHART ──────────────────────────────────────── */}
+            <div style={{ ...card,padding:16 }}>
+              <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8 }}>
+                <div>
+                  <div style={{ fontWeight:800,color:C.navy,fontSize:14 }}>Curvas Soberanas — NY Law (Yield% vs Duration)</div>
+                  <div style={{ fontSize:10,color:C.muted,marginTop:2 }}>Puntos verdes = bonos ARG actuales · Puntos azules = target según curva seleccionada · Flecha = tightening implícito</div>
+                </div>
+                <div style={{ display:"flex",gap:8,alignItems:"center",flexWrap:"wrap" }}>
+                  {Object.entries(scens).map(([k,s])=>(
+                    <div key={k} style={{ display:"flex",alignItems:"center",gap:5,background:`${s.col}18`,borderRadius:6,padding:"4px 8px",border:`1px solid ${s.col}40` }}>
+                      <span style={{ color:s.col,fontWeight:700,fontSize:10 }}>{s.label}:</span>
+                      <span style={{ fontSize:10,color:PEER_CURVES[usdTargets[k]]?.color||C.muted,fontWeight:600 }}>
+                        {PEER_CURVES[usdTargets[k]]?.label.split(" (")[0]||"Manual"}
+                      </span>
+                    </div>
+                  ))}
+                  <span style={{ fontSize:9,color:C.muted }}>← Cambiar en ⚙ Escenarios</span>
+                </div>
+              </div>
+              <PeerCurveChart bonds={bonds} usdTargets={usdTargets} scens={scens} horizon={horizon} currentBCS={currentBCS}/>
+            </div>
+
+            {/* ── USD BOND TARGET PRICE TABLE ─────────────────────────────────── */}
+            <div style={{ ...card,overflow:"hidden" }}>
+              <div style={{ padding:"10px 14px",background:C.navy,display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+                <span style={{ color:C.white,fontWeight:700,fontSize:12 }}>Bonos USD — Yield actual vs Target por Curva</span>
+                <span style={{ color:C.blue2,fontSize:10 }}>Target = interpolación por duración en curva seleccionada</span>
+              </div>
+              <div style={{ overflowX:"auto" }}>
+                <table style={{ width:"100%",borderCollapse:"collapse",fontSize:11 }}>
+                  <thead>
+                    <tr style={{ background:"#f1f5f9" }}>
+                      {["Bono","Dur.","Yield actual","Target BASE","Δ bps BASE","Ret. USD BASE","Target BULL","Δ bps BULL","Ret. USD BULL","Target BEAR","Δ bps BEAR","Ret. USD BEAR"].map(hh=>(
+                        <th key={hh} style={{ padding:"7px 9px",textAlign:"center",fontWeight:600,fontSize:9.5,color:C.muted,borderBottom:`2px solid ${C.border}`,whiteSpace:"nowrap" }}>{hh}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bonds.filter(b=>b.active&&b.tp==="USD").map((b,i)=>{
+                      const dur = b.dur??3;
+                      const rows = Object.entries(scens).map(([k,s])=>{
+                        const tgt = usdTargets[k]&&usdTargets[k]!=="manual" ? interpYield(usdTargets[k],dur) : (b.exitYields?.[k]??b.y);
+                        const dbps = tgt!=null ? Math.round((tgt-b.y)*100) : null;
+                        const ret = calcReturn(b,s,k,horizon,currentBCS,usdTargets[k]||null).rUSD;
+                        return {k,s,tgt,dbps,ret};
+                      });
+                      return (
+                        <tr key={b.id} style={{ background:i%2===0?C.card:C.bg,borderBottom:`1px solid ${C.border}` }}>
+                          <td style={{ padding:"7px 9px" }}>
+                            <div style={{ fontWeight:800,color:TYPES.USD.color,fontSize:12 }}>{b.t}</div>
+                            <div style={{ fontSize:9,color:C.muted }}>{b.n}</div>
+                          </td>
+                          <td style={{ padding:"7px 9px",textAlign:"center",color:C.muted,fontSize:10 }}>{dur.toFixed(1)}y</td>
+                          <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:C.text }}>{b.y.toFixed(2)}%</td>
+                          {rows.map(({k,s,tgt,dbps,ret})=>(
+                            <Fragment key={k}>
+                              <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:PEER_CURVES[usdTargets[k]]?.color||C.muted,borderLeft:`2px solid ${s.col}25` }}>
+                                {tgt!=null?`${tgt.toFixed(2)}%`:"–"}
+                              </td>
+                              <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:600,fontSize:10,
+                                color:dbps!=null?(dbps<0?C.pos:dbps>0?C.neg:C.muted):C.muted }}>
+                                {dbps!=null?(dbps<=0?`${dbps}bps`:`+${dbps}bps`):"–"}
+                              </td>
+                              <td style={{ padding:"7px 9px",textAlign:"center",fontWeight:700,color:rcu(ret) }}>
+                                {fmtS(ret)}
+                              </td>
+                            </Fragment>
+                          ))}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ padding:"6px 14px",fontSize:9,color:C.muted,borderTop:`1px solid ${C.border}` }}>
+                Δbps negativo (verde) = Argentina yield actual está SOBRE la curva target → hay tightening implícito → retorno positivo por compresión. Cambiar curva target en ⚙ Escenarios.
+              </div>
+            </div>
+
             {/* legend */}
             <div style={{ display:"flex",gap:12,alignItems:"center",flexWrap:"wrap" }}>
               {Object.entries(TYPES).map(([k,v])=>(
