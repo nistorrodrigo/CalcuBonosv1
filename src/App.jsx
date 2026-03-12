@@ -90,6 +90,51 @@ function resolveUSDExit(bond, scenKey, peerKey) {
   return fromCurve ?? bond.exitYields?.[scenKey] ?? bond.y;
 }
 
+
+// ─── CER TARGET REAL YIELD CURVES ────────────────────────────────────────────
+// Control points {d: duration_years, y: real_yield_%}
+// Represent different scenarios for where the CER real yield curve lands at horizon
+const CER_TARGET_CURVES = {
+  manual:    { label:"Manual (exit yields)", color:"#94a3b8",
+    points:[] }, // empty = use exitYields as-is
+  sin_cambio:{ label:"Sin cambio (actual)", color:TYPES.CER.color,
+    points:[{d:0.1,y:-0.15},{d:0.25,y:2.06},{d:0.5,y:4.11},{d:0.8,y:6.70},{d:1.0,y:6.90},{d:1.5,y:7.82},{d:2.0,y:8.57},{d:3.0,y:8.48},{d:5.5,y:8.66}] },
+  compresion_leve:{ label:"Compresión leve (−150bps)", color:"#22c55e",
+    points:[{d:0.1,y:1.0},{d:0.5,y:2.5},{d:1.0,y:4.5},{d:2.0,y:6.0},{d:3.0,y:6.5},{d:5.0,y:7.0},{d:6.0,y:7.2}] },
+  compresion_fuerte:{ label:"Compresión fuerte (−300bps)", color:"#0ea5e9",
+    points:[{d:0.1,y:0.0},{d:0.5,y:1.5},{d:1.0,y:2.5},{d:2.0,y:3.5},{d:3.0,y:4.5},{d:5.0,y:5.5},{d:6.0,y:6.0}] },
+  decompresion:{ label:"Decompresión (+200bps)", color:"#f97316",
+    points:[{d:0.1,y:3.0},{d:0.5,y:6.0},{d:1.0,y:8.5},{d:2.0,y:10.0},{d:3.0,y:10.5},{d:5.0,y:11.0}] },
+  flat_2:{ label:"Flat 2% real", color:"#a78bfa",
+    points:[{d:0.1,y:2},{d:6,y:2}] },
+  flat_5:{ label:"Flat 5% real", color:"#fb923c",
+    points:[{d:0.1,y:5},{d:6,y:5}] },
+};
+
+// Interpolate CER target real yield by duration
+function interpCERTarget(curveKey, dur) {
+  const curve = CER_TARGET_CURVES[curveKey];
+  if (!curve || !curve.points || curve.points.length === 0) return null;
+  const pts = curve.points;
+  if (dur <= pts[0].d) return pts[0].y;
+  if (dur >= pts[pts.length-1].d) return pts[pts.length-1].y;
+  for (let i = 0; i < pts.length-1; i++) {
+    if (dur >= pts[i].d && dur <= pts[i+1].d) {
+      const t = (dur - pts[i].d) / (pts[i+1].d - pts[i].d);
+      return +(pts[i].y + t * (pts[i+1].y - pts[i].y)).toFixed(3);
+    }
+  }
+  return pts[pts.length-1].y;
+}
+
+// Resolve effective exit yield for a CER bond given scenario curve selection
+function resolveCERExitYield(bond, scenKey, cerCurveKey) {
+  if (!cerCurveKey || cerCurveKey === "manual") return bond.exitYields?.[scenKey] ?? bond.y;
+  const dur = bond.dur ?? 1;
+  const fromCurve = interpCERTarget(cerCurveKey, dur);
+  return fromCurve ?? bond.exitYields?.[scenKey] ?? bond.y;
+}
+
 // ─── SCENARIOS ───────────────────────────────────────────────────────────────
 const S0 = {
   BASE:{ label:"Base", w:55, col:C.blue1,
@@ -177,12 +222,14 @@ function priceBond(tp, yld, monthsLeft, couponRate) {
   return 100;
 }
 
-function calcReturn(bond, scen, scenKey, horizon, currentBCS, peerCurveKey = null) {
+function calcReturn(bond, scen, scenKey, horizon, currentBCS, peerCurveKey = null, cerCurveKey = null) {
   const m0  = mths(bond.m);
   const h   = Math.min(horizon, m0);
   const m1  = Math.max(0, m0 - h);
-  // For USD bonds: use peer curve if selected, else manual exit yield
-  const ey  = bond.tp === "USD" ? resolveUSDExit(bond, scenKey, peerCurveKey) : (bond.exitYields?.[scenKey] ?? bond.y);
+  // Resolve exit yield: USD uses peer sovereign curves, CER uses real yield target curves
+  const ey  = bond.tp === "USD" ? resolveUSDExit(bond, scenKey, peerCurveKey)
+             : bond.tp === "CER" ? resolveCERExitYield(bond, scenKey, cerCurveKey)
+             : (bond.exitYields?.[scenKey] ?? bond.y);
   const path = scen.cpiPath ?? Array(24).fill(scen.cpiM ?? 2.5);
 
   if (bond.tp === "LECAP") {
@@ -231,10 +278,10 @@ function calcReturn(bond, scen, scenKey, horizon, currentBCS, peerCurveKey = nul
   return { rARS: 0, rUSD: 0 };
 }
 
-function calcWt(bond, scens, h, bcs, peerCurves = {}) {
+function calcWt(bond, scens, h, bcs, peerCurves = {}, cerCurves = {}) {
   let wA = 0, wU = 0, tw = 0;
   Object.entries(scens).forEach(([k, s]) => {
-    const r = calcReturn(bond, s, k, h, bcs, peerCurves[k] ?? null);
+    const r = calcReturn(bond, s, k, h, bcs, peerCurves[k] ?? null, cerCurves[k] ?? null);
     wA += r.rARS * s.w; wU += r.rUSD * s.w; tw += s.w;
   });
   return { rARS: wA / tw, rUSD: wU / tw };
@@ -577,6 +624,7 @@ export default function App() {
   const [tab,        setTab]       = useState("retornos"); // retornos | curvas | breakevens
   const [showPanel,  setShowPanel] = useState(false);
   const [usdTargets, setUsdTargets] = useState({BASE:"argentina_target", BULL:"colombia", BEAR:"egypt"}); // peer curve per scenario
+  const [cerTargets, setCerTargets] = useState({BASE:"compresion_leve", BULL:"compresion_fuerte", BEAR:"decompresion"}); // CER real yield target per scenario
   const [expandPath, setExpandPath]= useState({});        // {BASE:true, ...}
   const [showAdd,    setShowAdd]   = useState(false);
   const [newBond,    setNewBond]   = useState(blank);
@@ -593,8 +641,8 @@ export default function App() {
       .filter(b => filterTp === "ALL" || b.tp === filterTp)
       .map(b => {
         const byScen = {};
-        Object.entries(scens).forEach(([k,s]) => { byScen[k] = calcReturn(b, s, k, horizon, currentBCS, b.tp==="USD" ? usdTargets[k] : null); });
-        const wt = calcWt(b, scens, horizon, currentBCS, b.tp==="USD" ? usdTargets : {});
+        Object.entries(scens).forEach(([k,s]) => { byScen[k] = calcReturn(b, s, k, horizon, currentBCS, b.tp==="USD" ? usdTargets[k] : null, b.tp==="CER" ? cerTargets[k] : null); });
+        const wt = calcWt(b, scens, horizon, currentBCS, b.tp==="USD" ? usdTargets : {}, b.tp==="CER" ? cerTargets : {});
         return { ...b, byScen, wt };
       })
       .sort((a,z) => {
@@ -604,7 +652,7 @@ export default function App() {
         if(sortBy==="baseARS") return z.byScen.BASE.rARS - a.byScen.BASE.rARS;
         return 0;
       });
-  }, [bonds, scens, horizon, currentBCS, sortBy, filterTp, usdTargets]);
+  }, [bonds, scens, horizon, currentBCS, sortBy, filterTp, usdTargets, cerTargets]);
 
   const cfData = useMemo(() => {
     if (!cfBond) return [];
@@ -646,9 +694,9 @@ export default function App() {
   const returnCurve = useMemo(() => {
     const active = bonds.filter(b=>b.active);
     return active.map(b=>{
-      const wt  = calcWt(b, scens, horizon, currentBCS, b.tp==="USD" ? usdTargets : {});
-      const bull = calcReturn(b, scens.BULL, "BULL", horizon, currentBCS, b.tp==="USD" ? usdTargets.BULL : null);
-      const bear = calcReturn(b, scens.BEAR, "BEAR", horizon, currentBCS, b.tp==="USD" ? usdTargets.BEAR : null);
+      const wt  = calcWt(b, scens, horizon, currentBCS, b.tp==="USD" ? usdTargets : {}, b.tp==="CER" ? cerTargets : {});
+      const bull = calcReturn(b, scens.BULL, "BULL", horizon, currentBCS, b.tp==="USD" ? usdTargets.BULL : null, b.tp==="CER" ? cerTargets.BULL : null);
+      const bear = calcReturn(b, scens.BEAR, "BEAR", horizon, currentBCS, b.tp==="USD" ? usdTargets.BEAR : null, b.tp==="CER" ? cerTargets.BEAR : null);
       return {
         t:b.t, dur:b.dur||0.2,
         wUSD:+wt.rUSD.toFixed(2),
@@ -687,7 +735,7 @@ export default function App() {
       row.usdBaseUSD   = +usdR.toFixed(1);
       return row;
     });
-  }, [bonds, scens, horizon, currentBCS, usdTargets]);
+  }, [bonds, scens, horizon, currentBCS, usdTargets, cerTargets]);
 
   const scenKeys = Object.keys(scens);
   const card = { background:C.card, borderRadius:12, boxShadow:"0 2px 12px rgba(0,0,57,.08)", overflow:"hidden" };
@@ -782,6 +830,26 @@ export default function App() {
                       <div style={{ marginTop:4,fontSize:9,color:"#5070a0" }}>
                         {PEER_CURVES[usdTargets[key]]?.rating&&<span style={{ color:PEER_CURVES[usdTargets[key]]?.color,fontWeight:700 }}>{PEER_CURVES[usdTargets[key]]?.rating} · </span>}
                         Exit yields USD se calculan interpolando esta curva por duración de cada bono
+                      </div>
+                    )}
+                  </div>
+
+                  {/* CER Real Yield Target selector */}
+                  <div style={{ marginTop:6,background:"rgba(255,255,255,.06)",borderRadius:7,padding:"6px 8px",borderLeft:`3px solid ${CER_TARGET_CURVES[cerTargets[key]]?.color||TYPES.CER.color}` }}>
+                    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+                      <span style={{ color:"#8090a8",fontSize:10 }}>Target CER (tasa real)</span>
+                      <select value={cerTargets[key]||"manual"}
+                        onChange={e=>setCerTargets(p=>({...p,[key]:e.target.value}))}
+                        style={{ maxWidth:180,background:"rgba(255,255,255,.12)",border:"none",color:CER_TARGET_CURVES[cerTargets[key]]?.color||TYPES.CER.color,borderRadius:4,padding:"2px 6px",fontSize:10,fontWeight:700,cursor:"pointer" }}>
+                        {Object.entries(CER_TARGET_CURVES).map(([k,v])=>(
+                          <option key={k} value={k} style={{ color:C.text }}>{v.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {cerTargets[key]&&cerTargets[key]!=="manual"&&(
+                      <div style={{ marginTop:4,fontSize:9,color:"#5070a0" }}>
+                        Exit yields CER = interpolación de curva real por duración de cada bono
+                        {cerTargets[key]==="sin_cambio"&&<span style={{ color:TYPES.CER.color }}> (yields actuales, sin compresión)</span>}
                       </div>
                     )}
                   </div>
@@ -1126,17 +1194,101 @@ export default function App() {
             </div>
 
             <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:14 }}>
-              {/* Chart 1: CER Real yield curve */}
+              {/* Chart 1: CER Real yield curve — enhanced with target */}
               <div style={{ ...card,padding:16 }}>
-                <ScatterChart
-                  data={cerCurve}
-                  xKey="x" yKey="y" labelKey="t" colorKey="color"
-                  xLabel="Plazo (años a vcto)" yLabel="Tasa real anual (%)"
-                  title={`Curva CER — tasa real de mercado`}
-                  w={480} h={280}
-                  refLines={[{axis:"x",v:horizon/12,color:C.blue2}]}
-                />
-                <div style={{ fontSize:9,color:C.muted,marginTop:4,textAlign:"center" }}>Línea azul = horizonte actual ({horizon}m). Bonos sobre la curva: más baratos; debajo: más caros.</div>
+                {(()=>{
+                  const w=480, h=280, mg={t:30,r:20,b:40,l:50};
+                  const pw=w-mg.l-mg.r, ph=h-mg.t-mg.b;
+                  const cerBonds = bonds.filter(b=>b.active&&b.tp==="CER").sort((a,z)=>mths(a.m)-mths(z.m));
+                  const allYears = cerBonds.map(b=>mths(b.m)/12);
+                  const allYields = cerBonds.map(b=>b.y);
+                  // Target curve points for BASE
+                  const baseCurve = CER_TARGET_CURVES[cerTargets.BASE];
+                  const targetPts = baseCurve?.points||[];
+                  const allTgtY = targetPts.map(p=>p.y);
+                  const xMin=0, xMax=Math.max(6.5,...allYears)+0.3;
+                  const yMin=Math.min(-1,...allYields,...allTgtY)-0.5;
+                  const yMax=Math.max(...allYields,...allTgtY)+1;
+                  const px=x=>mg.l+(x-xMin)/(xMax-xMin)*pw;
+                  const py=y=>mg.t+(1-(y-yMin)/(yMax-yMin))*ph;
+                  const ticksX=Array.from({length:7},(_,i)=>i);
+                  const ticksY=Array.from({length:7},(_,i)=>+(yMin+(yMax-yMin)*i/6).toFixed(1));
+                  // smooth target path
+                  const durRange=Array.from({length:100},(_,i)=>i*(xMax/99));
+                  const tgtLinePts=targetPts.length>0
+                    ? durRange.map(d=>{
+                        const pts=targetPts;
+                        if(d<pts[0].d||d>pts[pts.length-1].d)return null;
+                        for(let i=0;i<pts.length-1;i++){
+                          if(d>=pts[i].d&&d<=pts[i+1].d){
+                            const t=(d-pts[i].d)/(pts[i+1].d-pts[i].d);
+                            return{x:px(d),y:py(pts[i].y+t*(pts[i+1].y-pts[i].y))};
+                          }
+                        }
+                        return null;
+                      }).filter(Boolean)
+                    : [];
+                  const tgtPath=tgtLinePts.map((p,i)=>`${i===0?'M':'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+                  // actual curve path through bonds
+                  const actPath=cerBonds.map((b,i)=>{
+                    const cx=px(mths(b.m)/12), cy=py(b.y);
+                    return `${i===0?'M':'L'}${cx.toFixed(1)},${cy.toFixed(1)}`;
+                  }).join(' ');
+                  return (
+                    <svg width={w} height={h} style={{fontFamily:"inherit",overflow:"visible"}}>
+                      <text x={w/2} y={18} textAnchor="middle" fontSize={11} fontWeight={700} fill={C.navy}>Curva CER — Tasa Real</text>
+                      {ticksX.map(v=><line key={v} x1={px(v)} y1={mg.t} x2={px(v)} y2={mg.t+ph} stroke={C.border} strokeWidth={0.7}/>)}
+                      {ticksY.map((v,i)=><line key={i} x1={mg.l} y1={py(v)} x2={mg.l+pw} y2={py(v)} stroke={C.border} strokeWidth={0.7}/>)}
+                      {/* zero line */}
+                      {yMin<0&&<line x1={mg.l} y1={py(0)} x2={mg.l+pw} y2={py(0)} stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="4 3"/>}
+                      {/* horizon line */}
+                      <line x1={px(horizon/12)} y1={mg.t} x2={px(horizon/12)} y2={mg.t+ph} stroke={C.blue2} strokeWidth={1.5} strokeDasharray="5 3" opacity={0.7}/>
+                      <rect x={mg.l} y={mg.t} width={pw} height={ph} fill="none" stroke={C.border}/>
+                      {ticksX.map(v=><text key={v} x={px(v)} y={mg.t+ph+14} textAnchor="middle" fontSize={8.5} fill={C.muted}>{v}y</text>)}
+                      {ticksY.map((v,i)=><text key={i} x={mg.l-5} y={py(v)+3.5} textAnchor="end" fontSize={8.5} fill={C.muted}>{v.toFixed(1)}%</text>)}
+                      <text x={mg.l+pw/2} y={h-4} textAnchor="middle" fontSize={9.5} fill={C.muted}>Duración (años)</text>
+                      <text x={10} y={mg.t+ph/2} textAnchor="middle" fontSize={9.5} fill={C.muted} transform={`rotate(-90,10,${mg.t+ph/2})`}>Tasa real %</text>
+                      {/* actual curve line */}
+                      {cerBonds.length>1&&<path d={actPath} fill="none" stroke={TYPES.CER.color} strokeWidth={2} strokeDasharray="5 3" opacity={0.8}/>}
+                      {/* target curve */}
+                      {tgtLinePts.length>1&&<path d={tgtPath} fill="none" stroke={baseCurve.color} strokeWidth={2.5} opacity={0.9}/>}
+                      {/* arrows bond → target */}
+                      {cerBonds.map(b=>{
+                        const dur=b.dur??1;
+                        const cx=px(mths(b.m)/12), cy=py(b.y);
+                        const ty=interpCERTarget(cerTargets.BASE,dur);
+                        if(ty===null) return null;
+                        const tcy=py(ty);
+                        return(
+                          <g key={b.id}>
+                            {Math.abs(tcy-cy)>4&&<line x1={cx} y1={cy} x2={cx} y2={tcy+Math.sign(tcy-cy)*3}
+                              stroke={baseCurve.color} strokeWidth={1.2} strokeDasharray="2 2" opacity={0.6}
+                              markerEnd="url(#cerArrow)"/>}
+                            <circle cx={cx} cy={cy} r={5} fill={TYPES.CER.color} stroke="white" strokeWidth={1.5}/>
+                            {ty!==null&&<circle cx={cx} cy={tcy} r={3.5} fill={baseCurve.color} stroke="white" strokeWidth={1} opacity={0.85}/>}
+                            <text x={cx+6} y={cy+4} fontSize={8} fontWeight={800} fill={TYPES.CER.color}>{b.t}</text>
+                            {ty!==null&&<text x={cx+6} y={tcy+4} fontSize={7.5} fill={baseCurve.color} opacity={0.9}>{ty.toFixed(2)}%</text>}
+                          </g>
+                        );
+                      })}
+                      {/* legend */}
+                      <line x1={mg.l+4} y1={mg.t+ph-12} x2={mg.l+20} y2={mg.t+ph-12} stroke={TYPES.CER.color} strokeWidth={2} strokeDasharray="4 2"/>
+                      <text x={mg.l+24} y={mg.t+ph-8} fontSize={8} fill={TYPES.CER.color} fontWeight={600}>Actual</text>
+                      {tgtLinePts.length>0&&<>
+                        <line x1={mg.l+58} y1={mg.t+ph-12} x2={mg.l+76} y2={mg.t+ph-12} stroke={baseCurve?.color||C.teal} strokeWidth={2.5}/>
+                        <text x={mg.l+80} y={mg.t+ph-8} fontSize={8} fill={baseCurve?.color||C.teal} fontWeight={600}>Target BASE ({baseCurve?.label?.split(" ")[0]})</text>
+                      </>}
+                      <defs>
+                        <marker id="cerArrow" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+                          <path d="M0,0 L0,5 L5,2.5 z" fill={baseCurve?.color||C.teal} opacity={0.8}/>
+                        </marker>
+                      </defs>
+                    </svg>
+                  );
+                })()}
+                <div style={{ fontSize:9,color:C.muted,marginTop:3,textAlign:"center" }}>
+                  Línea teal = target real yield (BASE). Flechas = compresión implícita. Cambiar en ⚙ Escenarios.
+                </div>
               </div>
 
               {/* Chart 2: Retorno ponderado vs duración */}
@@ -1172,44 +1324,79 @@ export default function App() {
               </div>
             </div>
 
-            {/* CER yield table */}
+            {/* CER yield table — enhanced with real yield targets */}
             <div style={{ ...card,overflow:"hidden" }}>
-              <div style={{ padding:"10px 14px",background:C.navy,color:C.white,fontWeight:700,fontSize:12 }}>
-                Tabla: Curva CER (detalle)
+              <div style={{ padding:"10px 14px",background:C.navy,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6 }}>
+                <span style={{ color:C.white,fontWeight:700,fontSize:12 }}>Bonos CER — Tasa Real Actual vs Target por Escenario</span>
+                <div style={{ display:"flex",gap:8 }}>
+                  {Object.entries(scens).map(([k,s])=>(
+                    <span key={k} style={{ fontSize:10,color:CER_TARGET_CURVES[cerTargets[k]]?.color||s.col,fontWeight:600 }}>
+                      {s.label}: {CER_TARGET_CURVES[cerTargets[k]]?.label||"Manual"}
+                    </span>
+                  ))}
+                </div>
               </div>
               <div style={{ overflowX:"auto" }}>
-                <table style={{ width:"100%",borderCollapse:"collapse",fontSize:11 }}>
+                <table style={{ width:"100%",borderCollapse:"collapse",fontSize:10.5 }}>
                   <thead>
                     <tr style={{ background:"#f1f5f9" }}>
-                      {["Ticker","Vcto","Años","Duración","TIR real","Exit BASE","Exit BULL","Exit BEAR","CPI break-even (vs flat)"].map(h=>(
-                        <th key={h} style={{ padding:"7px 10px",textAlign:"center",fontWeight:600,fontSize:10,color:C.muted,borderBottom:`1px solid ${C.border}` }}>{h}</th>
+                      <th rowSpan={2} style={{ padding:"7px 10px",textAlign:"left",fontWeight:700,fontSize:10,color:C.muted,borderBottom:`2px solid ${C.border}` }}>Bono</th>
+                      <th rowSpan={2} style={{ padding:"7px 10px",textAlign:"center",fontWeight:600,fontSize:10,color:C.muted,borderBottom:`2px solid ${C.border}` }}>Dur.</th>
+                      <th rowSpan={2} style={{ padding:"7px 10px",textAlign:"center",fontWeight:700,fontSize:10,color:TYPES.CER.color,borderBottom:`2px solid ${C.border}` }}>TIR real act.</th>
+                      {["BASE","BULL","BEAR"].map(k=>(
+                        <th key={k} colSpan={3} style={{ padding:"6px 10px",textAlign:"center",fontWeight:700,fontSize:10,color:scens[k]?.col,borderBottom:`2px solid ${scens[k]?.col}`,borderLeft:`2px solid ${scens[k]?.col}40` }}>
+                          {scens[k]?.label} — {CER_TARGET_CURVES[cerTargets[k]]?.label||"Manual"}
+                        </th>
+                      ))}
+                    </tr>
+                    <tr style={{ background:"#f8fafc" }}>
+                      {["BASE","BULL","BEAR"].map(k=>(
+                        <Fragment key={k}>
+                          <th style={{ padding:"4px 8px",textAlign:"center",fontWeight:600,fontSize:9,color:scens[k]?.col,borderLeft:`2px solid ${scens[k]?.col}40` }}>Target %</th>
+                          <th style={{ padding:"4px 8px",textAlign:"center",fontWeight:600,fontSize:9,color:C.muted }}>Δ bps</th>
+                          <th style={{ padding:"4px 8px",textAlign:"center",fontWeight:600,fontSize:9,color:C.muted }}>Ret. USD</th>
+                        </Fragment>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {bonds.filter(b=>b.active&&b.tp==="CER").sort((a,z)=>mths(a.m)-mths(z.m)).map((b,i)=>(
                       <tr key={b.id} style={{ background:i%2===0?C.card:C.bg,borderBottom:`1px solid ${C.border}` }}>
-                        <td style={{ padding:"7px 10px",fontWeight:800,color:TYPES.CER.color }}>{b.t}</td>
-                        <td style={{ padding:"7px 10px",color:C.muted,fontSize:10 }}>{b.m.slice(0,7)}</td>
-                        <td style={{ padding:"7px 10px",textAlign:"center" }}>{(mths(b.m)/12).toFixed(2)}</td>
-                        <td style={{ padding:"7px 10px",textAlign:"center" }}>{b.dur}</td>
-                        <td style={{ padding:"7px 10px",textAlign:"center",fontWeight:700,color:TYPES.CER.color }}>{b.y.toFixed(2)}%</td>
-                        {["BASE","BULL","BEAR"].map(k=>(
-                          <td key={k} style={{ padding:"7px 10px",textAlign:"center",color:scens[k]?.col }}>{b.exitYields?.[k]}%</td>
-                        ))}
-                        <td style={{ padding:"7px 10px",textAlign:"center",fontWeight:600,color:C.blue1 }}>
-                          {(() => {
-                            const lecap = bonds.find(lb=>lb.active&&lb.tp==="LECAP"&&mths(lb.m)>=Math.min(horizon,mths(b.m)));
-                            if (!lecap) return "–";
-                            const lr = calcReturn(lecap, scens.BASE, "BASE", horizon, currentBCS).rUSD;
-                            const be = breakEvenCPI(b, scens.BASE, "BASE", horizon, currentBCS, lr);
-                            return be !== null ? `${be}% /m` : "n/a";
-                          })()}
+                        <td style={{ padding:"7px 10px" }}>
+                          <div style={{ fontWeight:800,color:TYPES.CER.color,fontSize:12 }}>{b.t}</div>
+                          <div style={{ fontSize:9,color:C.muted }}>{b.m.slice(0,7)}</div>
                         </td>
+                        <td style={{ padding:"7px 10px",textAlign:"center",color:C.muted,fontSize:10 }}>{(b.dur??1).toFixed(2)}y</td>
+                        <td style={{ padding:"7px 10px",textAlign:"center",fontWeight:800,color:TYPES.CER.color,fontSize:13 }}>{b.y.toFixed(2)}%</td>
+                        {["BASE","BULL","BEAR"].map(k=>{
+                          const tgt = cerTargets[k]&&cerTargets[k]!=="manual"
+                            ? interpCERTarget(cerTargets[k], b.dur??1)
+                            : (b.exitYields?.[k]??b.y);
+                          const dbps = tgt!=null ? Math.round((tgt-b.y)*100) : null;
+                          const ret = calcReturn(b, scens[k], k, horizon, currentBCS, null, cerTargets[k]||null).rUSD;
+                          const tgtColor = CER_TARGET_CURVES[cerTargets[k]]?.color || scens[k]?.col;
+                          return (
+                            <Fragment key={k}>
+                              <td style={{ padding:"7px 10px",textAlign:"center",fontWeight:700,fontSize:12,color:tgtColor,borderLeft:`2px solid ${scens[k]?.col}25` }}>
+                                {tgt!=null?`${tgt.toFixed(2)}%`:"–"}
+                              </td>
+                              <td style={{ padding:"7px 10px",textAlign:"center",fontWeight:600,fontSize:10,
+                                color:dbps!=null?(dbps<0?C.pos:dbps>0?C.neg:C.muted):C.muted }}>
+                                {dbps!=null?(dbps<=0?`${dbps}bps`:`+${dbps}bps`):"–"}
+                              </td>
+                              <td style={{ padding:"7px 10px",textAlign:"center",fontWeight:700,fontSize:12,color:rcu(ret) }}>
+                                {fmtS(ret)}
+                              </td>
+                            </Fragment>
+                          );
+                        })}
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div style={{ padding:"6px 14px",fontSize:9,color:C.muted,borderTop:`1px solid ${C.border}` }}>
+                Δbps negativo (verde) = compresión de tasa real → retorno positivo. Cambiar curva target en ⚙ Escenarios → "Target CER (tasa real)".
               </div>
             </div>
           </div>
