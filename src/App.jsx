@@ -334,9 +334,8 @@ export default function App() {
   const [cfScen,     setCfScen]    = useState("BASE");
   const [editBond,   setEditBond]  = useState(null); // for exit yield editing
 
-  const activeBonds = bonds.filter(b => b.active);
-
   const results = useMemo(() => {
+    const activeBonds = bonds.filter(b => b.active);
     return activeBonds
       .filter(b => filterTp === "ALL" || b.tp === filterTp)
       .map(b => {
@@ -352,7 +351,7 @@ export default function App() {
         if (sortBy==="baseARS") return z.byScen.BASE.rARS - a.byScen.BASE.rARS;
         return 0;
       });
-  }, [activeBonds, scens, horizon, currentBCS, sortBy, filterTp]);
+  }, [bonds, scens, horizon, currentBCS, sortBy, filterTp]);
 
   const removeBond = id => setBonds(p => p.filter(b => b.id !== id));
   const togBond    = id => setBonds(p => p.map(b => b.id===id ? {...b,active:!b.active} : b));
@@ -410,7 +409,7 @@ export default function App() {
           </div>
 
           <span style={{ color:"#7090b0", fontSize:11 }}>Horizonte:</span>
-          <select value={horizon} onChange={e=>setHorizon(+e.target.value)} style={{ background:C.blue1, color:C.white, border:"none", borderRadius:7, padding:"5px 9px", fontWeight:700, cursor:"pointer", fontSize:12 }}>
+          <select value={horizon} onChange={e=>setHorizon(parseInt(e.target.value,10))} style={{ background:C.blue1, color:C.white, border:"none", borderRadius:7, padding:"5px 9px", fontWeight:700, cursor:"pointer", fontSize:12 }}>
             {[1,2,3,6,9,12,18,24,36].map(m=>(
               <option key={m} value={m}>{m>=12?`${m/12}a${m>12?"s":""}`:m===1?"1m":`${m}m`}</option>
             ))}
@@ -523,7 +522,7 @@ export default function App() {
         {/* ── TABLE ──────────────────────────────────────────────────────────── */}
         <div style={card}>
           <div style={{ overflowX:"auto" }}>
-            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+            <table key={horizon} style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
               <thead>
                 <tr style={{ background:C.navy }}>
                   <th style={TH()}>#</th>
@@ -534,7 +533,7 @@ export default function App() {
                   {scenKeys.map(k=>(
                     <th key={k} colSpan={2} style={{...TH(),borderLeft:`2px solid ${scens[k].col}`,color:scens[k].col}}>{scens[k].label}</th>
                   ))}
-                  <th colSpan={2} style={{...TH(),borderLeft:"2px solid gold",color:"gold"}}>Pond.</th>
+                  <th colSpan={2} style={{...TH(),borderLeft:"2px solid gold",color:"gold"}}>Pond. <span style={{fontSize:9,opacity:.7,fontWeight:400}}>({horizon}m)</span></th>
                   <th style={TH()}>EY</th>
                   <th style={TH()}></th>
                 </tr>
