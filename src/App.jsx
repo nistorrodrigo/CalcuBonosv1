@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, Fragment } from "react";
+import AnalysisTab from "./Analysis.jsx";
 
 // ─── BRAND ───────────────────────────────────────────────────────────────────
 const C = {
@@ -908,7 +909,7 @@ export default function App() {
 
       {/* ── TABS ────────────────────────────────────────────────────────────── */}
       <div style={{ background:C.navy,borderBottom:`2px solid rgba(255,255,255,.08)`,padding:"0 18px",display:"flex",gap:2 }}>
-        {[["retornos","📊 Retornos"],["curvas","📈 Curvas"],["breakevens","⚖ Breakevens"]].map(([key,lbl])=>(
+        {[["retornos","📊 Retornos"],["curvas","📈 Curvas"],["breakevens","⚖ Breakevens"],["analisis","🔬 Análisis RV"]].map(([key,lbl])=>(
           <button key={key} onClick={()=>setTab(key)}
             style={{ padding:"9px 16px",border:"none",cursor:"pointer",fontWeight:700,fontSize:12,
               background:"transparent",color:tab===key?C.blue2:"rgba(255,255,255,.4)",
@@ -1529,6 +1530,12 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* ════ TAB: ANÁLISIS RV ══════════════════════════════════════════════ */}
+        {tab === "analisis" && (
+          <AnalysisTab bonds={bonds} scens={scens} horizon={horizon} currentBCS={currentBCS}/>
+        )}
+
       </div>
 
       {/* ═══ MODAL: EDIT EXIT YIELDS ════════════════════════════════════════ */}
