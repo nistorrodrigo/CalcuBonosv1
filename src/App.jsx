@@ -166,8 +166,18 @@ const B0 = [
   { id:"t31y7",  t:"T31Y7",  n:"Lecap May'27",    tp:"LECAP", y:2.42, m:"2027-05-31", active:true, exitYields:{BASE:2.20,BULL:1.60,BEAR:3.40} },
   { id:"t30j7",  t:"T30J7",  n:"Lecap Jun'27",    tp:"LECAP", y:2.36, m:"2027-06-30", active:true, exitYields:{BASE:2.20,BULL:1.60,BEAR:3.40} },
   { id:"ty30p",  t:"TY30P",  n:"Lecap May'30",    tp:"LECAP", y:2.03, m:"2030-05-30", active:true, exitYields:{BASE:1.90,BULL:1.60,BEAR:2.90} },
-  { id:"m31g6",  t:"M31G6",  n:"M31G6 Ago'26",    tp:"LECAP", y:3.51, m:"2026-08-31", active:false, exitYields:{BASE:2.50,BULL:1.70,BEAR:3.30} },
-  { id:"tmf27",  t:"TMF27",  n:"TMF27 Feb'27",    tp:"LECAP", y:1.57, m:"2027-02-26", active:false, exitYields:{BASE:2.30,BULL:1.60,BEAR:3.50} },
+  { id:"m31g6",  t:"M31G6",  n:"TAMAR Ago'26",    tp:"TAMAR", y:2.84, sp:0, m:"2026-08-31", active:true,  exitYields:{BASE:2.50,BULL:1.80,BEAR:3.50} }, // reabierto licitación 12/3/26
+  { id:"tmf27",  t:"TMF27",  n:"TAMAR Feb'27",    tp:"TAMAR", y:3.00, sp:0, m:"2027-02-26", active:true,  exitYields:{BASE:2.20,BULL:1.60,BEAR:3.60} }, // nuevo licitación 12/3/26
+  // ─── Licitación 12/03/2026 · liquida 16/03/2026 (T+2 fin de semana) ───────
+  // a) LECAP nuevas
+  { id:"s15y6",  t:"S15Y6",  n:"Lecap May15'26",  tp:"LECAP", y:2.60, m:"2026-05-15", active:true, exitYields:{BASE:2.50,BULL:1.80,BEAR:3.40} },
+  { id:"s30s6",  t:"S30S6",  n:"Lecap Sep'26",     tp:"LECAP", y:2.53, m:"2026-09-30", active:true, exitYields:{BASE:2.45,BULL:1.70,BEAR:3.40} },
+  // b) CER nuevas
+  { id:"x15y6",  t:"X15Y6",  n:"CER May15'26",    tp:"CER",   y:0.37, dur:0.10, m:"2026-05-15", active:true, exitYields:{BASE:1.00,BULL:4.50,BEAR:17.50} },
+  { id:"x30s6",  t:"X30S6",  n:"CER Sep'26",       tp:"CER",   y:5.09, dur:0.38, m:"2026-09-30", active:true, exitYields:{BASE:4.50,BULL:6.30,BEAR:14.00} },
+  // c) USD — AO27 (Bonar 2027, ley argentina, 6% cupón)
+  { id:"ao27",   t:"AO27",   n:"Bonar 2027",        tp:"USD",   y:5.59, coupon:6.0, dur:1.5, m:"2027-10-29", active:true, exitYields:{BASE:5.00,BULL:4.20,BEAR:8.00} },
+
   // CER
   { id:"x29y6",  t:"X29Y6",  n:"CER May'26",      tp:"CER", y:-0.15, dur:0.10, m:"2026-05-29", active:true, exitYields:{BASE:1.10,BULL:4.90,BEAR:17.40} },
   { id:"tzx26",  t:"TZX26",  n:"CER Jun'26",      tp:"CER", y:2.06, dur:0.25,  m:"2026-06-30", active:true, exitYields:{BASE:2.20,BULL:6.30,BEAR:15.60} },
